@@ -1,29 +1,26 @@
-use std::{
-    fs::{self, File},
-    io::{self, BufWriter, Write},
-    path::{Path, PathBuf},
-};
-
+use std::{fs, path::PathBuf};
 use anyhow::{Context, Result};
 use bytesize::ByteSize;
-use clap::Parser;
+use clap::Parser;  // Added this import
 use content_inspector::ContentType;
 use glob::Pattern;
 use ignore::WalkBuilder;
 use pathdiff::diff_paths;
 
+mod cli;
+mod file_utils;
+mod language;
+mod tree;
+
 const DEFAULT_PREAMBLE: &str = "\
 # Project Context
-
 This content was generated using `promptify`, a tool that creates structured project overviews \
 for Large Language Models. Below you'll find a directory tree and the contents of relevant files \
 from this project.
-
 ## How to Read This Document
 - The 'Directory Structure' section shows the project's file organization
 - The 'File Contents' section contains the actual code and content of each file
 - Each file is marked with its path and language-appropriate syntax highlighting
-
 ";
 
 const DEFAULT_POSTAMBLE: &str = "\
@@ -34,148 +31,13 @@ const DEFAULT_POSTAMBLE: &str = "\
 3. Asking the user what specific assistance they need with the code]
 ";
 
-/// A tool to generate LLM context prompts from directory contents
-#[derive(Parser)]
-#[command(author, version, about, long_about = None)]
-#[command(name = "promptify")]
-#[command(about = "Generate LLM context prompts from directory contents")]
-#[command(long_about = "A tool that scans a directory and generates a formatted prompt suitable for Large Language Models (LLMs). \
-    It creates a structured output containing a directory tree and file contents, respecting gitignore rules and various filters.")]
-struct Cli {
-    /// Directory to scan (must be specified)
-    #[arg(value_name = "DIRECTORY")]
-    root_path: PathBuf,
-
-    /// Output file path ("-" for stdout)
-    #[arg(short, long, default_value = "prompt.md", value_name = "FILE")]
-    output: String,
-
-    /// Custom preamble text to add at the start of the output
-    #[arg(long, value_name = "TEXT", conflicts_with = "preamble_file")]
-    preamble: Option<String>,
-
-    /// Path to a file containing the preamble
-    #[arg(long, value_name = "FILE")]
-    preamble_file: Option<PathBuf>,
-
-    /// Custom postamble text to add at the end of the output
-    #[arg(long, value_name = "TEXT", conflicts_with = "postamble_file")]
-    postamble: Option<String>,
-
-    /// Path to a file containing the postamble
-    #[arg(long, value_name = "FILE")]
-    postamble_file: Option<PathBuf>,
-
-    /// Do not respect VCS ignore files (like .gitignore)
-    #[arg(long)]
-    no_gitignore: bool,
-
-    /// Include binary files (metadata only)
-    #[arg(long)]
-    include_binaries: bool,
-
-    /// Glob patterns for files to always include
-    #[arg(long, value_name = "GLOB")]
-    include: Vec<String>,
-
-    /// Glob patterns for files/directories to explicitly exclude
-    #[arg(long, value_name = "GLOB")]
-    exclude: Vec<String>,
-
-    /// Maximum file size (e.g., "1M", "512k")
-    #[arg(long, value_name = "SIZE")]
-    max_file_size: Option<String>,
-}
-
-fn parse_size(size_str: &str) -> Result<u64> {
-    let size_str = size_str.trim().to_lowercase();
-    let (num_str, suffix) = size_str.find(|c: char| c.is_alphabetic())
-        .map(|i| (&size_str[..i], &size_str[i..]))
-        .unwrap_or((&size_str, "b"));
-
-    let num: u64 = num_str.parse().context("Invalid size number")?;
-    
-    match suffix {
-        "k" | "kb" => Ok(num * 1024),
-        "m" | "mb" => Ok(num * 1024 * 1024),
-        "g" | "gb" => Ok(num * 1024 * 1024 * 1024),
-        "b" | "" => Ok(num),
-        _ => Err(anyhow::anyhow!("Invalid size suffix")),
-    }
-}
-
-fn infer_language(path: &Path) -> Option<&'static str> {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| match ext.to_lowercase().as_str() {
-            "rs" => "rust",
-            "py" => "python",
-            "js" => "javascript",
-            "ts" => "typescript",
-            "jsx" | "tsx" => "tsx",
-            "cpp" | "cc" | "cxx" => "cpp",
-            "c" => "c",
-            "h" | "hpp" => "cpp",
-            "go" => "go",
-            "java" => "java",
-            "kt" => "kotlin",
-            "rb" => "ruby",
-            "php" => "php",
-            "cs" => "csharp",
-            "swift" => "swift",
-            "md" => "markdown",
-            "json" => "json",
-            "yaml" | "yml" => "yaml",
-            "toml" => "toml",
-            "xml" => "xml",
-            "sql" => "sql",
-            "sh" | "bash" => "bash",
-            "ps1" => "powershell",
-            "html" => "html",
-            "css" => "css",
-            "scss" | "sass" => "scss",
-            "dockerfile" => "dockerfile",
-            _ => "plaintext",
-        })
-}
-
-fn load_file_content(path: &Path) -> Result<String> {
-    fs::read_to_string(path).with_context(|| format!("Failed to read file: {}", path.display()))
-}
-
-fn get_output_writer(output_path: &str) -> Result<Box<dyn Write>> {
-    if output_path == "-" {
-        Ok(Box::new(io::stdout()))
-    } else {
-        let file = File::create(output_path)
-            .with_context(|| format!("Failed to create output file: {}", output_path))?;
-        Ok(Box::new(BufWriter::new(file)))
-    }
-}
-
-fn generate_tree_structure(files: &[PathBuf], root: &Path) -> String {
-    let mut result = String::from("```\n");
-    let files: Vec<_> = files
-        .iter()
-        .filter_map(|p| diff_paths(p, root).map(|p| p.to_string_lossy().into_owned()))
-        .collect();
-
-    for (i, file) in files.iter().enumerate() {
-        let is_last = i == files.len() - 1;
-        let prefix = if is_last { "└── " } else { "├── " };
-        result.push_str(&format!("{}{}\n", prefix, file));
-    }
-    result.push_str("```\n");
-    result
-}
-
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let cli = cli::Cli::parse();
 
     // Set up file size limit
     let size_limit = cli.max_file_size
         .as_deref()
-        .map(parse_size)
+        .map(file_utils::parse_size)
         .transpose()?;
 
     // Compile glob patterns
@@ -195,7 +57,7 @@ fn main() -> Result<()> {
     let preamble = if let Some(text) = cli.preamble {
         text
     } else if let Some(path) = cli.preamble_file {
-        load_file_content(&path)?
+        file_utils::load_file_content(&path)?
     } else {
         DEFAULT_PREAMBLE.to_string()
     };
@@ -203,7 +65,7 @@ fn main() -> Result<()> {
     let postamble = if let Some(text) = cli.postamble {
         text
     } else if let Some(path) = cli.postamble_file {
-        load_file_content(&path)?
+        file_utils::load_file_content(&path)?
     } else {
         DEFAULT_POSTAMBLE.to_string()
     };
@@ -217,7 +79,6 @@ fn main() -> Result<()> {
     for entry in walker {
         let entry = entry.context("Failed to read directory entry")?;
         let path = entry.path();
-
         if !path.is_file() {
             continue;
         }
@@ -235,7 +96,6 @@ fn main() -> Result<()> {
         // Check if file matches include patterns
         let is_included = include_patterns.is_empty() || 
             include_patterns.iter().any(|p| p.matches(&relative_path_str));
-
         if !is_included {
             continue;
         }
@@ -244,10 +104,12 @@ fn main() -> Result<()> {
         if let Some(limit) = size_limit {
             let size = entry.metadata()?.len();
             if size > limit {
-                eprintln!("Info: Skipping large file: {} ({} > {})", 
+                eprintln!(
+                    "Info: Skipping large file: {} ({} > {})", 
                     relative_path_str, 
                     ByteSize(size), 
-                    ByteSize(limit));
+                    ByteSize(limit)
+                );
                 continue;
             }
         }
@@ -259,14 +121,14 @@ fn main() -> Result<()> {
             continue;
         }
 
-        files.push(path.to_owned());
+        files.push(PathBuf::from(path));
     }
 
     // Sort files for consistent output
     files.sort();
 
     // Create output
-    let mut writer = get_output_writer(&cli.output)?;
+    let mut writer = file_utils::get_output_writer(&cli.output)?;
 
     // Write preamble
     writer.write_all(preamble.as_bytes())?;
@@ -274,7 +136,7 @@ fn main() -> Result<()> {
 
     // Write directory structure
     writer.write_all(b"## Directory Structure\n\n")?;
-    writer.write_all(generate_tree_structure(&files, &cli.root_path).as_bytes())?;
+    writer.write_all(tree::generate_tree_structure(&files, &cli.root_path).as_bytes())?;
     writer.write_all(b"\n")?;
 
     // Write file contents
@@ -284,14 +146,14 @@ fn main() -> Result<()> {
             .context("Failed to calculate relative path")?;
         
         writer.write_all(format!("### {}\n\n", relative_path.display()).as_bytes())?;
-
+        
         let content = fs::read(path).context("Failed to read file")?;
         if content_inspector::inspect(&content) == ContentType::BINARY {
             writer.write_all(b"[Binary File: Content not shown]\n\n")?;
             continue;
         }
 
-        let lang = infer_language(path).unwrap_or("plaintext");
+        let lang = language::infer_language(path).unwrap_or("plaintext");
         writer.write_all(format!("```{}\n", lang).as_bytes())?;
         
         if let Ok(content) = String::from_utf8(content) {
