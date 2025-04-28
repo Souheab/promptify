@@ -109,27 +109,6 @@ The generated file includes:
 3. File contents in Markdown code blocks (using triple backticks)
 4. A postamble with instructions for the LLM
 
-Example output structure:
-```markdown
-# Project Context
-...
-
-## Directory Structure
-```
-src/
-  ├── main.rs
-  ├── utils.rs
-  └── tests/
-      └── test_main.rs
-```
-
-## File Contents
-### src/main.rs
-```
-// File contents here with basic Markdown code block formatting
-```
-...
-
 ### Binary File Handling
 
 By default, Promptify skips binary files to keep the output clean and prevent issues with non-text content. However, you can:
@@ -147,13 +126,6 @@ By default, Promptify skips binary files to keep the output clean and prevent is
    # Include binaries but exclude certain types
    promptify . --include-binaries --exclude "**/*.exe"
    ```
-
-## Interactive File Handling
-
-When the output file already exists, Promptify provides interactive options:
-- Overwrite the existing file
-- Enter a new filename
-- Cancel the operation
 
 ## License
 
