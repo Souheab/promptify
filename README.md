@@ -100,15 +100,6 @@ Output directly to stdout:
 promptify . -o -
 ```
 
-## Output Format
-
-The generated file includes:
-
-1. A preamble explaining the content
-2. A directory tree showing the project structure
-3. File contents in Markdown code blocks (using triple backticks)
-4. A postamble with instructions for the LLM
-
 ### Binary File Handling
 
 By default, Promptify skips binary files to keep the output clean and prevent issues with non-text content. However, you can:
@@ -126,6 +117,16 @@ By default, Promptify skips binary files to keep the output clean and prevent is
    # Include binaries but exclude certain types
    promptify . --include-binaries --exclude "**/*.exe"
    ```
+
+
+## Output Format
+
+The generated file includes:
+
+1. A preamble explaining the content
+2. A directory tree showing the project structure
+3. File contents in Markdown code blocks (using triple backticks)
+4. A postamble with instructions for the LLM
 
 ## License
 
